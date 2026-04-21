@@ -1,155 +1,49 @@
-import {Editor, MarkdownView, Notice, Plugin} from 'obsidian';
-import {DEFAULT_SETTINGS, ImageServerPluginSettings, ImageServerSettingTab} from "./settings";
+import {App, PluginSettingTab, Setting} from "obsidian";
+import ImageServerPlugin from "./main";
 
-export default class ImageServerPlugin extends Plugin {
-	settings: ImageServerPluginSettings;
+export interface ImageServerPluginSettings {
+	serverHost: string;
+	responseField: string;
+}
 
-	async onload() {
-		console.log('Image Server Plugin loading');
+export const DEFAULT_SETTINGS: ImageServerPluginSettings = {
+	serverHost: '',
+	responseField: 'image_url'
+}
 
-		// Load settings
-		await this.loadSettings();
+export class ImageServerSettingTab extends PluginSettingTab {
+	plugin: ImageServerPlugin;
 
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new ImageServerSettingTab(this.app, this));
-
-		// 1. Listen for Paste Events
-		this.registerEvent(
-			this.app.workspace.on('editor-paste', (evt: ClipboardEvent, editor: Editor, view: MarkdownView) => {
-				this.handleImageInsertion(evt, editor, evt.clipboardData);
-			})
-		);
-
-		// 2. Listen for Drag & Drop Events
-		this.registerEvent(
-			this.app.workspace.on('editor-drop', (evt: DragEvent, editor: Editor, view: MarkdownView) => {
-				this.handleImageInsertion(evt, editor, evt.dataTransfer);
-			})
-		);
-
-		console.log('Image Server Plugin loaded');
+	constructor(app: App, plugin: ImageServerPlugin) {
+		super(app, plugin);
+		this.plugin = plugin;
 	}
 
-	onunload() {
-		console.log('Image Server Plugin unloaded');
-	}
+	display(): void {
+		const {containerEl} = this;
 
-	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as Partial<ImageServerPluginSettings>);
-	}
+		containerEl.empty();
 
-	async saveSettings() {
-		await this.saveData(this.settings);
-	}
+		new Setting(containerEl)
+			.setName('Image Server Host')
+			.setDesc('The endpoint URL for uploading your images (e.g., https://your-server.com/upload)')
+			.addText(text => text
+				.setPlaceholder('Enter server URL')
+				.setValue(this.plugin.settings.serverHost)
+				.onChange(async (value) => {
+					this.plugin.settings.serverHost = value;
+					await this.plugin.saveSettings();
+				}));
 
-	/**
-	 * Helper function to parse the DataTransfer object from paste or drop events.
-	 * If an image is found, it intercepts the default behavior and uploads the image.
-	 */
-	private handleImageInsertion(evt: Event, editor: Editor, data: DataTransfer | null) {
-		// If there is no data, exit early
-		if (!data) return;
-
-		const files = data.files;
-		if (files.length === 0) return;
-
-		// First, check if there are any images. If not, let Obsidian handle it normally.
-		let hasImage = false;
-		for (let i = 0; i < files.length; i++) {
-			if (files[i].type.startsWith('image/')) {
-				hasImage = true;
-				break;
-			}
-		}
-
-		if (!hasImage) return;
-
-		// Prevent Obsidian's default action (saving locally)
-		evt.preventDefault();
-
-		//Check for the server host before we start processing the batch of images
-		if (!this.settings.serverHost) {
-			new Notice('Upload failed: Please set your Image Server Host in the plugin settings.');
-			return;
-		}
-
-		// Iterate through the files to upload the images
-		for (let i = 0; i < files.length; i++) {
-			const file = files[i];
-			if (file.type.startsWith('image/')) {
-				this.uploadAndInsertImage(file, editor);
-			}
-		}
-	}
-
-	/**
-	 * Handles the POST request to upload the image and updates the editor.
-	 */
-	private async uploadAndInsertImage(file: File, editor: Editor) {
-
-		// 1. Insert a temporary placeholder at the current cursor position
-		const placeholderId = Math.random().toString(36).substring(7);
-		const placeholderText = `![Uploading ${file.name}... #${placeholderId}]()`;
-		editor.replaceSelection(placeholderText + '\n');
-
-		try {
-			// 2. Prepare the payload
-			const formData = new FormData();
-			// Match the parameter expected by FastAPI: upload_single_image(file: UploadFile = File(...))
-			formData.append('file', file);
-
-			// 3. Issue the POST request to the server specified in settings
-			const uploadUrl = this.settings.serverHost;
-			new Notice(`Uploading ${file.name}...`);
-
-			const response = await fetch(uploadUrl, {
-				method: 'POST',
-				body: formData
-			});
-
-			if (!response.ok) {
-				throw new Error(`Upload failed: ${response.statusText}`);
-			}
-
-			// Parse the JSON returned from the server
-			const responseData = await response.json();
-
-			// 4. Extract the image_url using the configured response field key
-			const responseField = this.settings.responseField || 'image_url';
-			const returnedUrl = responseData[responseField];
-
-			if (!returnedUrl) {
-				throw new Error(`Response field '${responseField}' not found in the server payload.`);
-			}
-
-			// 5. Replace placeholder with the final markdown link
-			const finalMarkdown = `![${file.name}](${returnedUrl})`;
-			this.replaceTextInEditor(editor, placeholderText, finalMarkdown);
-			new Notice(`Successfully uploaded ${file.name}!`);
-
-		} catch (error) {
-			console.error("Upload error:", error);
-			new Notice(`Failed to upload ${file.name}.`);
-
-			// Fallback: replace placeholder with an error mark
-			this.replaceTextInEditor(editor, placeholderText, `![Error uploading ${file.name}]()`);
-		}
-	}
-
-	/**
-	 * Finds specific text in the editor and replaces it without moving the cursor drastically.
-	 */
-	private replaceTextInEditor(editor: Editor, target: string, replacement: string) {
-		const lines = editor.lineCount();
-		for (let i = 0; i < lines; i++) {
-			const lineText = editor.getLine(i);
-			const index = lineText.indexOf(target);
-			if (index !== -1) {
-				const start = { line: i, ch: index };
-				const end = { line: i, ch: index + target.length };
-				editor.replaceRange(replacement, start, end);
-				break;
-			}
-		}
+		new Setting(containerEl)
+			.setName('Response Field')
+			.setDesc('The JSON key in the server response containing the returned image URL.')
+			.addText(text => text
+				.setPlaceholder('image_url')
+				.setValue(this.plugin.settings.responseField)
+				.onChange(async (value) => {
+					this.plugin.settings.responseField = value;
+					await this.plugin.saveSettings();
+				}));
 	}
 }
