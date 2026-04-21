@@ -1,99 +1,145 @@
-import {App, Editor, MarkdownView, Modal, Notice, Plugin} from 'obsidian';
-import {DEFAULT_SETTINGS, MyPluginSettings, SampleSettingTab} from "./settings";
+import {Editor, MarkdownView, Notice, Plugin} from 'obsidian';
+import {DEFAULT_SETTINGS, ImageServerPluginSettings, ImageServerSettingTab} from "./settings";
 
-// Remember to rename these classes and interfaces!
-
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
+export default class ImageServerPlugin extends Plugin {
+	settings: ImageServerPluginSettings;
 
 	async onload() {
+		console.log('Image Server Plugin loading');
+
+		// Load settings
 		await this.loadSettings();
 
-		// This creates an icon in the left ribbon.
-		this.addRibbonIcon('dice', 'Sample', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
-
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status bar text');
-
-		// This adds a simple command that can be triggered anywhere
-		this.addCommand({
-			id: 'open-modal-simple',
-			name: 'Open modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'replace-selected',
-			name: 'Replace selected content',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				editor.replaceSelection('Sample editor command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-modal-complex',
-			name: 'Open modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
-
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
-				return false;
-			}
-		});
-
 		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
+		this.addSettingTab(new ImageServerSettingTab(this.app, this));
 
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			new Notice("Click");
-		});
+		// 1. Listen for Paste Events
+		this.registerEvent(
+			this.app.workspace.on('editor-paste', (evt: ClipboardEvent, editor: Editor, view: MarkdownView) => {
+				this.handleImageInsertion(evt, editor, evt.clipboardData);
+			})
+		);
 
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
+		// 2. Listen for Drag & Drop Events
+		this.registerEvent(
+			this.app.workspace.on('editor-drop', (evt: DragEvent, editor: Editor, view: MarkdownView) => {
+				this.handleImageInsertion(evt, editor, evt.dataTransfer);
+			})
+		);
 
+		console.log('Image Server Plugin loaded');
 	}
 
 	onunload() {
+		console.log('Image Server Plugin unloaded');
 	}
 
 	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as Partial<MyPluginSettings>);
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as Partial<ImageServerPluginSettings>);
 	}
 
 	async saveSettings() {
 		await this.saveData(this.settings);
 	}
-}
 
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
+	/**
+	 * Helper function to parse the DataTransfer object from paste or drop events.
+	 * If an image is found, it intercepts the default behavior and uploads the image.
+	 */
+	private handleImageInsertion(evt: Event, editor: Editor, data: DataTransfer | null) {
+		// If there is no data, exit early
+		if (!data) return;
+
+		const files = data.files;
+		if (files.length === 0) return;
+
+		// First, check if there are any images. If not, let Obsidian handle it normally.
+		let hasImage = false;
+		for (let i = 0; i < files.length; i++) {
+			if (files[i].type.startsWith('image/')) {
+				hasImage = true;
+				break;
+			}
+		}
+
+		if (!hasImage) return;
+
+		// Prevent Obsidian's default action (saving locally)
+		evt.preventDefault();
+
+		// Iterate through the files to upload the images
+		for (let i = 0; i < files.length; i++) {
+			const file = files[i];
+
+			if (file.type.startsWith('image/')) {
+				this.uploadAndInsertImage(file, editor);
+			}
+		}
 	}
 
-	onOpen() {
-		let {contentEl} = this;
-		contentEl.setText('Woah!');
+	/**
+	 * Handles the POST request to upload the image and updates the editor.
+	 */
+	private async uploadAndInsertImage(file: File, editor: Editor) {
+		// 1. Insert a temporary placeholder at the current cursor position
+		const placeholderId = Math.random().toString(36).substring(7);
+		const placeholderText = `![Uploading ${file.name}... #${placeholderId}]()`;
+		editor.replaceSelection(placeholderText + '\n');
+
+		try {
+			// 2. Prepare the payload
+			const formData = new FormData();
+			// Match the parameter expected by FastAPI: upload_single_image(file: UploadFile = File(...))
+			formData.append('file', file);
+
+			// 3. Issue the POST request to the FastAPI server
+			// Change this if your server is deployed on a different host/port
+			const uploadUrl = 'PLACEHOLDER';
+			new Notice(`Uploading ${file.name}...`);
+
+			const response = await fetch(uploadUrl, {
+				method: 'POST',
+				body: formData
+			});
+
+			if (!response.ok) {
+				throw new Error(`Upload failed: ${response.statusText}`);
+			}
+
+			// Parse the ImageUpload model returned from FastAPI
+			const responseData = await response.json();
+
+			// 4. Extract the image_url from the response data
+			const returnedUrl = responseData.image_url;
+
+			// 5. Replace placeholder with the final markdown link
+			const finalMarkdown = `![${file.name}](${returnedUrl})`;
+			this.replaceTextInEditor(editor, placeholderText, finalMarkdown);
+			new Notice(`Successfully uploaded ${file.name}!`);
+
+		} catch (error) {
+			console.error("Upload error:", error);
+			new Notice(`Failed to upload ${file.name}.`);
+
+			// Fallback: replace placeholder with an error mark
+			this.replaceTextInEditor(editor, placeholderText, `![Error uploading ${file.name}]()`);
+		}
 	}
 
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
+	/**
+	 * Finds specific text in the editor and replaces it without moving the cursor drastically.
+	 */
+	private replaceTextInEditor(editor: Editor, target: string, replacement: string) {
+		const lines = editor.lineCount();
+		for (let i = 0; i < lines; i++) {
+			const lineText = editor.getLine(i);
+			const index = lineText.indexOf(target);
+			if (index !== -1) {
+				const start = { line: i, ch: index };
+				const end = { line: i, ch: index + target.length };
+				editor.replaceRange(replacement, start, end);
+				break;
+			}
+		}
 	}
 }
