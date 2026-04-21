@@ -67,6 +67,11 @@ export default class ImageServerPlugin extends Plugin {
 		// Prevent Obsidian's default action (saving locally)
 		evt.preventDefault();
 
+		if (!this.settings.serverHost) {
+			new Notice('Upload failed: Please set your Image Server Host in the plugin settings.');
+			return;
+		}
+
 		// Iterate through the files to upload the images
 		for (let i = 0; i < files.length; i++) {
 			const file = files[i];
@@ -92,9 +97,8 @@ export default class ImageServerPlugin extends Plugin {
 			// Match the parameter expected by FastAPI: upload_single_image(file: UploadFile = File(...))
 			formData.append('file', file);
 
-			// 3. Issue the POST request to the FastAPI server
-			// Change this if your server is deployed on a different host/port
-			const uploadUrl = 'PLACEHOLDER';
+			// 3. Issue the POST request to the server specified in settings
+			const uploadUrl = this.settings.serverHost;
 			new Notice(`Uploading ${file.name}...`);
 
 			const response = await fetch(uploadUrl, {
@@ -106,11 +110,16 @@ export default class ImageServerPlugin extends Plugin {
 				throw new Error(`Upload failed: ${response.statusText}`);
 			}
 
-			// Parse the ImageUpload model returned from FastAPI
+			// Parse the JSON returned from the server
 			const responseData = await response.json();
 
-			// 4. Extract the image_url from the response data
-			const returnedUrl = responseData.image_url;
+			// 4. Extract the image_url using the configured response field key
+			const responseField = this.settings.responseField || 'image_url';
+			const returnedUrl = responseData[responseField];
+
+			if (!returnedUrl) {
+				throw new Error(`Response field '${responseField}' not found in the server payload.`);
+			}
 
 			// 5. Replace placeholder with the final markdown link
 			const finalMarkdown = `![${file.name}](${returnedUrl})`;
